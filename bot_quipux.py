@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, date
 from playwright.async_api import async_playwright
 
 try:
@@ -71,10 +71,213 @@ def generar_excel(all_docs_data, xlsx_path, sheet_name="Documentos"):
 
 
 # ─────────────────────────────────────────────────────────
+# Parsear fecha de documento Quipux a objeto date
+# ─────────────────────────────────────────────────────────
+def parsear_fecha(fecha_str):
+    """Intenta parsear una fecha en varios formatos comunes de Quipux.
+    Retorna un objeto date o None si no se puede parsear."""
+    fecha_str = fecha_str.strip()
+    formatos = [
+        "%d/%m/%Y",      # 06/04/2026
+        "%Y-%m-%d",      # 2026-04-06
+        "%d-%m-%Y",      # 06-04-2026
+        "%d/%m/%Y %H:%M",  # 06/04/2026 14:30
+        "%Y-%m-%d %H:%M",  # 2026-04-06 14:30
+        "%d-%m-%Y %H:%M",  # 06-04-2026 14:30
+        "%d/%m/%Y %H:%M:%S",  # 06/04/2026 14:30:00
+        "%Y-%m-%d %H:%M:%S",  # 2026-04-06 14:30:00
+    ]
+    for fmt in formatos:
+        try:
+            return datetime.strptime(fecha_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+# ─────────────────────────────────────────────────────────
+# Función para navegar a una bandeja específica
+# ─────────────────────────────────────────────────────────
+QUIPUX_BASE = "https://quipux.espe.edu.ec"
+
+async def navegar_bandeja(target_page, bandeja_nombre, carpeta_codigo, pagina=1, es_paginacion=False):
+    """Navega a la bandeja indicada haciendo CLICK en el enlace del menú.
+    Si no puede navegar automáticamente, pide al usuario que haga clic manual.
+    Retorna el mainFrame o None."""
+
+    # ── Función auxiliar: obtener mainFrame ──
+    def get_main_frame():
+        for f in target_page.frames:
+            if f.name == "mainFrame":
+                return f
+        for f in target_page.frames:
+            if f.url and "cuerpo.php" in f.url:
+                return f
+        return None
+
+    # ── Función auxiliar: verificar bandeja cargada ──
+    async def verificar_bandeja(mf):
+        """Retorna el nombre de la bandeja que realmente se muestra."""
+        try:
+            info = await mf.evaluate("""
+                () => {
+                    const body = document.body.innerText || '';
+                    // Buscar "Bandeja: Enviados" o "Bandeja: Recibidos"
+                    const match = body.match(/Bandeja:\\s*(\\S+)/);
+                    return match ? match[1] : 'desconocido';
+                }
+            """)
+            return info
+        except Exception:
+            return "error"
+
+    # ── Si es paginación, usar paginador dentro de la bandeja actual ──
+    if es_paginacion and pagina > 1:
+        mf = get_main_frame()
+        if mf:
+            try:
+                await mf.evaluate(
+                    f"paginador_reload_div('adodb_next_page={pagina}')"
+                )
+                await asyncio.sleep(3)
+            except Exception:
+                pass
+        return get_main_frame()
+
+    # ── Diagnóstico: listar frames ──
+    print(f"       Frames disponibles:")
+    for i, f in enumerate(target_page.frames):
+        try:
+            fu = f.url[:80] if f.url else "N/A"
+        except Exception:
+            fu = "error"
+        print(f"         [{i}] name='{f.name}', url={fu}")
+
+    navegacion_ok = False
+
+    # ── Método 1: Buscar enlace llamarListado en menú (comillas simples y dobles) ──
+    print(f"       Buscando enlace de menú para '{bandeja_nombre}'...")
+    for frame in target_page.frames:
+        if frame.name == "mainFrame":
+            continue
+        try:
+            link_text = await frame.evaluate(f"""
+                () => {{
+                    // Buscar con comillas simples y dobles
+                    const targets = [
+                        "llamarListado('{bandeja_nombre}'",
+                        'llamarListado("{bandeja_nombre}"',
+                        "llamarListado(\\'{bandeja_nombre}\\'",
+                    ];
+                    const links = document.querySelectorAll('a');
+                    document.querySelectorAll('[data-bot-target]').forEach(
+                        el => el.removeAttribute('data-bot-target')
+                    );
+                    for (const link of links) {{
+                        const href = (link.getAttribute('href') || '');
+                        const onclick = (link.getAttribute('onclick') || '');
+                        const combined = href + ' ' + onclick;
+                        for (const target of targets) {{
+                            if (combined.includes(target)) {{
+                                link.setAttribute('data-bot-target', 'true');
+                                return link.innerText.trim();
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+            """)
+            if link_text:
+                await frame.click('a[data-bot-target="true"]')
+                await frame.evaluate(
+                    "document.querySelector('[data-bot-target]')"
+                    "?.removeAttribute('data-bot-target')"
+                )
+                navegacion_ok = True
+                print(f"       ✓ Click en '{link_text}' (frame: {frame.name or '?'})")
+                break
+        except Exception:
+            continue
+
+    # ── Método 2: Buscar enlace cuyo texto COMIENCE con el nombre ──
+    if not navegacion_ok:
+        print(f"       Buscando enlace por texto...")
+        for frame in target_page.frames:
+            if frame.name == "mainFrame":
+                continue
+            try:
+                found = await frame.evaluate(f"""
+                    () => {{
+                        const links = document.querySelectorAll('a');
+                        document.querySelectorAll('[data-bot-target]').forEach(
+                            el => el.removeAttribute('data-bot-target')
+                        );
+                        for (const link of links) {{
+                            const text = link.innerText.trim();
+                            // Coincide "Enviados" o "Enviados (3)" pero NO "No Enviados"
+                            if (text === '{bandeja_nombre}' ||
+                                text.match(/^{bandeja_nombre}\\s*\\(\\d/)) {{
+                                link.setAttribute('data-bot-target', 'true');
+                                return text;
+                            }}
+                        }}
+                        return false;
+                    }}
+                """)
+                if found:
+                    await frame.click('a[data-bot-target="true"]')
+                    await frame.evaluate(
+                        "document.querySelector('[data-bot-target]')"
+                        "?.removeAttribute('data-bot-target')"
+                    )
+                    navegacion_ok = True
+                    print(f"       ✓ Click en '{found}' (frame: {frame.name or '?'})")
+                    break
+            except Exception:
+                continue
+
+    # Esperar a que el contenido se actualice
+    if navegacion_ok:
+        await asyncio.sleep(5)
+
+    # ── Verificar qué bandeja se cargó realmente ──
+    mf = get_main_frame()
+    if mf:
+        bandeja_real = await verificar_bandeja(mf)
+        print(f"       Bandeja cargada: {bandeja_real}")
+        if bandeja_nombre.lower() not in bandeja_real.lower():
+            print(f"       ⚠ La bandeja cargada ({bandeja_real}) NO coincide "
+                  f"con la solicitada ({bandeja_nombre})")
+            navegacion_ok = False  # Forzar fallback manual
+
+    # ── FALLBACK MANUAL: pedir al usuario que haga clic ──
+    if not navegacion_ok:
+        print(f"\n  ╔══════════════════════════════════════════════════════╗")
+        print(f"  ║  ⚠ No se pudo navegar automáticamente a {bandeja_nombre:<12}║")
+        print(f"  ║  Por favor, haz clic en '{bandeja_nombre}' en el menú    ║")
+        print(f"  ║  lateral izquierdo del navegador.                    ║")
+        print(f"  ╚══════════════════════════════════════════════════════╝")
+        input(f"\n  >>> Presiona ENTER cuando hayas seleccionado '{bandeja_nombre}' en el navegador... ")
+        await asyncio.sleep(2)
+        mf = get_main_frame()
+        if mf:
+            bandeja_real = await verificar_bandeja(mf)
+            print(f"       Bandeja cargada: {bandeja_real}")
+
+    return get_main_frame()
+
+
+# ─────────────────────────────────────────────────────────
 # Descargar todos los documentos de la bandeja actual
 # ─────────────────────────────────────────────────────────
-async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
-    """Descarga todos los documentos (con paginación) de la bandeja activa."""
+async def descargar_bandeja(target_page, main_frame, context, download_dir, bandeja_nombre, carpeta_codigo="8", fecha_desde=None, fecha_hasta=None):
+    """Descarga todos los documentos (con paginación) de la bandeja activa.
+    Si fecha_desde y fecha_hasta (date) se proporcionan, sólo descarga documentos
+    cuya fecha esté dentro del rango [fecha_desde, fecha_hasta] (inclusive).
+    carpeta_codigo: '2' para Recibidos, '8' para Enviados (usado en paginación)."""
+
+    # Extraer nombre simple de bandeja (sin " — usuario")
+    bandeja_simple = bandeja_nombre.split(' — ')[0] if ' — ' in bandeja_nombre else bandeja_nombre
 
     os.makedirs(download_dir, exist_ok=True)
 
@@ -84,6 +287,27 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
     except Exception:
         print("       Esperando carga AJAX...")
         await asyncio.sleep(5)
+
+    # Verificar URL y contenido del frame cargado
+    try:
+        frame_url = main_frame.url
+        print(f"       Frame URL: {frame_url}")
+        # Verificar qué bandeja se muestra realmente
+        bandeja_detectada = await main_frame.evaluate("""
+            () => {
+                const body = document.body.innerText || '';
+                // Buscar indicadores de qué bandeja estamos viendo
+                const url = location.href || '';
+                const nomcarpeta = url.match(/nomcarpeta=([^&]+)/);
+                return {
+                    url_carpeta: nomcarpeta ? nomcarpeta[1] : 'desconocido',
+                    url_completa: location.href
+                };
+            }
+        """)
+        print(f"       Bandeja en URL: {bandeja_detectada.get('url_carpeta', '?')}")
+    except Exception as e:
+        print(f"       ⚠ Error verificando bandeja: {e}")
 
     # Detectar total de páginas
     total_pages = await main_frame.evaluate("""
@@ -95,10 +319,15 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
         }
     """)
     print(f"       Páginas encontradas: {total_pages}")
+    if fecha_desde and fecha_hasta:
+        print(f"       📅 Rango de fechas: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
+    else:
+        print(f"       📅 Descargando TODOS los documentos")
 
     descargados = 0
     errores = 0
     total_docs = 0
+    omitidos_fecha = 0
     all_docs_data = []
 
     for current_page in range(1, total_pages + 1):
@@ -109,14 +338,17 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
         # Navegar a la página si no es la primera
         if current_page > 1:
             print(f"  Navegando a página {current_page}...")
-            await main_frame.evaluate(f"""
-                () => {{
-                    paginador_reload_div('adodb_next_page={current_page}');
-                }}
-            """)
-            await asyncio.sleep(3)
+            main_frame = await navegar_bandeja(
+                target_page, bandeja_simple, carpeta_codigo,
+                pagina=current_page, es_paginacion=True
+            )
+            if not main_frame:
+                print(f"  ⚠ Error: No se pudo navegar a página {current_page}")
+                break
             try:
-                await main_frame.wait_for_selector("tr.listado1, tr.listado2", timeout=15000)
+                await main_frame.wait_for_selector(
+                    "tr.listado1, tr.listado2", timeout=15000
+                )
             except Exception:
                 await asyncio.sleep(3)
 
@@ -126,6 +358,11 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
                 const docs = [];
                 const rows = document.querySelectorAll('tr.listado1, tr.listado2');
                 rows.forEach((row, idx) => {
+                    // Saltar filas ocultas (de otra bandeja que quedaron en el DOM)
+                    const style = window.getComputedStyle(row);
+                    if (style.display === 'none' || style.visibility === 'hidden') return;
+                    if (row.offsetParent === null && style.position !== 'fixed') return;
+
                     const cells = row.querySelectorAll('td');
                     const links = row.querySelectorAll('a[href*="mostrar_documento"]');
                     let radicado = '', textrad = '', carpeta = '';
@@ -170,7 +407,8 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
                         usuarioAnterior = (cells[10]?.innerText || '').trim();
                     }
 
-                    if (radicado) {
+                    // Solo incluir filas que tengan radicado Y datos visibles
+                    if (radicado && (numDoc || asunto || remitente)) {
                         docs.push({
                             index: idx, radicado, textrad, carpeta,
                             asunto, remitente, fecha, numDoc,
@@ -188,6 +426,17 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
             print("  Sin documentos, saltando...")
             continue
 
+        # ── LOG DETALLADO: mostrar todos los documentos extraídos ──
+        print(f"\n  {'No.':<5} {'Carpeta':<15} {'Num. Documento':<30} {'Remitente':<25} {'Fecha':<12}")
+        print(f"  {'-'*5} {'-'*15} {'-'*30} {'-'*25} {'-'*12}")
+        for i, d in enumerate(docs, 1):
+            print(f"  {i:<5} {d.get('carpeta','?'):<15} {d.get('numDoc','?')[:28]:<30} "
+                  f"{d.get('remitente','?')[:23]:<25} {d.get('fecha','?'):<12}")
+        print()
+
+        # Variable para controlar si debemos detener por fecha
+        detener_por_fecha = False
+
         for doc in docs:
             total_docs += 1
             radicado = doc["radicado"]
@@ -198,6 +447,23 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
             noReferencia = doc.get("noReferencia", "")
             usuarioAnterior = doc.get("usuarioAnterior", "")
 
+            # ── Filtro por rango de fechas ──
+            if fecha_desde and fecha_hasta:
+                fecha_doc = parsear_fecha(doc.get("fecha", ""))
+                if fecha_doc:
+                    if fecha_doc < fecha_desde:
+                        omitidos_fecha += 1
+                        print(f"  ─── [{total_docs}] {numDoc} ───")
+                        print(f"  ⏭ Omitido (fecha {doc.get('fecha', '?')} anterior a {fecha_desde.strftime('%d/%m/%Y')})")
+                        print()
+                        continue
+                    if fecha_doc > fecha_hasta:
+                        omitidos_fecha += 1
+                        print(f"  ─── [{total_docs}] {numDoc} ───")
+                        print(f"  ⏭ Omitido (fecha {doc.get('fecha', '?')} posterior a {fecha_hasta.strftime('%d/%m/%Y')})")
+                        print()
+                        continue
+
             safe_num = re.sub(r'[^\w\-]', '_', numDoc or textrad)
             doc_folder = f"DOC_{total_docs:03d}_{safe_num}"
             doc_dir = os.path.join(download_dir, doc_folder)
@@ -205,7 +471,9 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
             os.makedirs(doc_dir, exist_ok=True)
 
             print(f"  ─── [{total_docs}] {numDoc} ───")
+            print(f"  Carpeta: {carpeta}")
             print(f"  Asunto: {asunto}")
+            print(f"  De: {doc.get('remitente', '?')}")
 
             try:
                 doc_url = (
@@ -213,6 +481,7 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
                     f"?verrad={radicado}&textrad={textrad}"
                     f"&carpeta={carpeta}&menu_ver_tmp=3&tipo_ventana=popup"
                 )
+                print(f"  URL: {doc_url}")
                 doc_page = await context.new_page()
                 await doc_page.goto(doc_url, wait_until="domcontentloaded", timeout=60000)
                 await asyncio.sleep(3)
@@ -440,6 +709,9 @@ async def descargar_bandeja(main_frame, context, download_dir, bandeja_nombre):
     print(f"  RESUMEN — {bandeja_nombre}")
     print(f"  Total páginas:        {total_pages}")
     print(f"  Total documentos:     {total_docs}")
+    if fecha_desde and fecha_hasta:
+        print(f"  Rango de fechas:      {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
+        print(f"  Omitidos (fecha):     {omitidos_fecha}")
     print(f"  Descargados:          {descargados}")
     print(f"  Errores:              {errores}")
     print(f"  Carpeta:              {download_dir}")
@@ -586,6 +858,26 @@ async def run():
 
         usuario_actual = await obtener_usuario_actual()
 
+        # ── Nombre de carpeta para este usuario ──
+        safe_user = re.sub(r'[^\w]', '_', usuario_actual)[:30]
+        print(f"\n{'─' * 60}")
+        print(f"  📁 Carpeta de descarga para este usuario")
+        print(f"{'─' * 60}")
+        print(f"  Base: {BASE_DIR}")
+        print(f"  Carpeta por defecto: {safe_user}/")
+        print(f"  (Dentro se crearán subcarpetas Recibidos/, Enviados/ y Archivados/)")
+        print(f"\n  Ingresa el nombre de la carpeta o presiona ENTER")
+        print(f"  para usar la carpeta por defecto.")
+        nombre_carpeta = input(f"\n  📁 Nombre de carpeta [{safe_user}]: ").strip()
+        if nombre_carpeta:
+            nombre_carpeta = re.sub(r'[^\w\-. ]', '_', nombre_carpeta)[:50]
+        else:
+            nombre_carpeta = safe_user
+        print(f"  ✓ Carpeta: {os.path.join(BASE_DIR, nombre_carpeta)}/")
+        print(f"     ├── Recibidos/")
+        print(f"     ├── Enviados/")
+        print(f"     └── Archivados/")
+
         # ══════════════════════════════════════════════
         # MENÚ INTERACTIVO
         # ══════════════════════════════════════════════
@@ -595,10 +887,13 @@ async def run():
             print("  ║          QUIPUX — Menú Principal                ║")
             print("  ╚══════════════════════════════════════════════════╝")
             print(f"\n  👤 Usuario: {usuario_actual}")
-            print("\n  ─── Opciones ───")
+            print(f"  📁 Carpeta: {nombre_carpeta}/")
+            print("\n  ─── Bandejas ───")
             print("  [1] 📥 Descargar Recibidos")
             print("  [2] 📤 Descargar Enviados")
-            print("  [3] 👤 Cambiar de usuario")
+            print("  [3] 📦 Descargar Archivados  (Otras Bandejas)")
+            print("\n  ─── Opciones ───")
+            print("  [4] 👤 Cambiar de usuario")
             print("  [0] 🚪 Salir")
             print("═" * 60)
 
@@ -608,51 +903,91 @@ async def run():
                 print("\n  👋 ¡Hasta luego!")
                 break
 
-            elif opcion in ("1", "2"):
-                if opcion == "1":
-                    bandeja_nombre = "Recibidos"
-                    carpeta_codigo = "2"
-                else:
-                    bandeja_nombre = "Enviados"
-                    carpeta_codigo = "8"
+            elif opcion in ("1", "2", "3"):
+                opciones_bandeja = {
+                    "1": ("Recibidos", "2", "📥"),
+                    "2": ("Enviados", "8", "📤"),
+                    "3": ("Archivados", "5", "📦"),
+                }
+                bandeja_nombre, carpeta_codigo, emoji = opciones_bandeja[opcion]
 
-                print(f"\n{'=' * 60}")
-                emoji = "📥" if opcion == "1" else "📤"
-                print(f"  {emoji} DESCARGA DE {bandeja_nombre.upper()}")
-                print(f"  👤 {usuario_actual}")
-                print(f"{'=' * 60}")
+                # ── Sub-menú: rango de descarga ──
+                print(f"\n{'─' * 60}")
+                print(f"  {emoji} {bandeja_nombre.upper()} — Rango de descarga")
+                print(f"{'─' * 60}")
+                print("  [1] 📋 Descargar TODO")
+                print("  [2] 📅 Descargar por rango de fechas")
+                print("  [0] ↩  Volver al menú")
+                print(f"{'─' * 60}")
 
-                # Navegar a la bandeja seleccionada
-                main_frame = await obtener_main_frame()
-                if main_frame:
-                    try:
-                        await main_frame.evaluate(f"""
-                            () => {{
-                                if (typeof llamarListado === 'function') {{
-                                    llamarListado('{bandeja_nombre}', '{carpeta_codigo}');
-                                }} else {{
-                                    location.href = 'cuerpo.php?nomcarpeta={bandeja_nombre}&carpeta={carpeta_codigo}&adodb_next_page=1';
-                                }}
-                            }}
-                        """)
-                        await asyncio.sleep(4)
-                    except Exception as e:
-                        pass
+                opcion_rango = input("\n  Selecciona una opción: ").strip()
 
-                # Obtener mainFrame nuevamente porque al navegar se desmonta (Frame detached)
-                main_frame = await obtener_main_frame()
-                if not main_frame:
-                    print(f"  ⚠ Error: No se encontró el frame principal para descargar {bandeja_nombre}.")
+                if opcion_rango == "0":
                     continue
 
-                safe_user = re.sub(r'[^\w]', '_', usuario_actual)[:30]
-                dl_dir = os.path.join(BASE_DIR, safe_user, bandeja_nombre)
-                await descargar_bandeja(main_frame, context, dl_dir, f"{bandeja_nombre} — {usuario_actual}")
+                fecha_desde = None
+                fecha_hasta = None
+
+                if opcion_rango == "2":
+                    print("\n  Ingresa el rango de fechas para descargar documentos.")
+                    print("  Solo se descargarán documentos cuya fecha esté dentro")
+                    print("  del rango indicado (inclusive).")
+                    print("  Formato: DD/MM/AAAA  (ejemplo: 01/01/2025)")
+
+                    # ── Fecha DESDE ──
+                    while True:
+                        fecha_desde_input = input("\n  📅 Fecha DESDE: ").strip()
+                        fecha_desde = parsear_fecha(fecha_desde_input)
+                        if fecha_desde:
+                            break
+                        print("  ⚠ Formato de fecha no válido. Usa DD/MM/AAAA")
+                        print("    Ejemplo: 01/01/2025")
+
+                    # ── Fecha HASTA ──
+                    while True:
+                        fecha_hasta_input = input("  📅 Fecha HASTA: ").strip()
+                        fecha_hasta = parsear_fecha(fecha_hasta_input)
+                        if not fecha_hasta:
+                            print("  ⚠ Formato de fecha no válido. Usa DD/MM/AAAA")
+                            print("    Ejemplo: 31/12/2025")
+                            continue
+                        if fecha_hasta < fecha_desde:
+                            print(f"  ⚠ La fecha HASTA ({fecha_hasta.strftime('%d/%m/%Y')}) no puede ser")
+                            print(f"    anterior a la fecha DESDE ({fecha_desde.strftime('%d/%m/%Y')}).")
+                            print(f"    Ingresa una fecha igual o posterior.")
+                            continue
+                        break
+
+                    print(f"\n  ✔ Rango seleccionado: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
+                elif opcion_rango != "1":
+                    print("  ⚠ Opción no válida")
+                    continue
+
+                dl_dir = os.path.join(BASE_DIR, nombre_carpeta, bandeja_nombre)
+
+                print(f"\n{'=' * 60}")
+                print(f"  {emoji} DESCARGA DE {bandeja_nombre.upper()}")
+                print(f"  👤 {usuario_actual}")
+                print(f"  📁 {dl_dir}")
+                if fecha_desde and fecha_hasta:
+                    print(f"  📅 Desde: {fecha_desde.strftime('%d/%m/%Y')}  Hasta: {fecha_hasta.strftime('%d/%m/%Y')}")
+                else:
+                    print(f"  📅 Descargando TODO")
+                print(f"{'=' * 60}")
+
+                # Navegar directamente a la bandeja con URL absoluta
+                print(f"  Navegando a {bandeja_nombre}...")
+                main_frame = await navegar_bandeja(target_page, bandeja_nombre, carpeta_codigo, pagina=1)
+                if not main_frame:
+                    print(f"  ⚠ Error: No se pudo navegar a {bandeja_nombre}.")
+                    continue
+
+                await descargar_bandeja(target_page, main_frame, context, dl_dir, f"{bandeja_nombre} — {usuario_actual}", carpeta_codigo=carpeta_codigo, fecha_desde=fecha_desde, fecha_hasta=fecha_hasta)
 
                 print("\n" + "─" * 60)
                 input("  Presiona ENTER para volver al menú... ")
 
-            elif opcion == "3":
+            elif opcion == "4":
                 # ── Cambiar usuario ──
                 print("\n" + "─" * 60)
                 print("  👤 CAMBIAR DE USUARIO")
@@ -664,6 +999,26 @@ async def run():
                 await asyncio.sleep(2)
                 usuario_actual = await obtener_usuario_actual()
                 print(f"\n  ✓ Usuario detectado: {usuario_actual}")
+
+                # ── Nombre de carpeta para el nuevo usuario ──
+                safe_user = re.sub(r'[^\w]', '_', usuario_actual)[:30]
+                print(f"\n{'─' * 60}")
+                print(f"  📁 Carpeta de descarga para este usuario")
+                print(f"{'─' * 60}")
+                print(f"  Base: {BASE_DIR}")
+                print(f"  Carpeta por defecto: {safe_user}/")
+                print(f"  (Dentro se crearán subcarpetas Recibidos/, Enviados/ y Archivados/)")
+                print(f"\n  Ingresa el nombre de la carpeta o presiona ENTER")
+                print(f"  para usar la carpeta por defecto.")
+                nombre_carpeta = input(f"\n  📁 Nombre de carpeta [{safe_user}]: ").strip()
+                if nombre_carpeta:
+                    nombre_carpeta = re.sub(r'[^\w\-. ]', '_', nombre_carpeta)[:50]
+                else:
+                    nombre_carpeta = safe_user
+                print(f"  ✓ Carpeta: {os.path.join(BASE_DIR, nombre_carpeta)}/")
+                print(f"     ├── Recibidos/")
+                print(f"     ├── Enviados/")
+                print(f"     └── Archivados/")
 
             else:
                 print("  ⚠ Opción no válida")

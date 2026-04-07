@@ -14,6 +14,8 @@ Asegúrate de tener instalado lo siguiente en tu computadora:
 
 Sigue estos pasos para configurar el entorno:
 
+### En macOS / Linux
+
 1.  **Instalar las dependencias de Python**:
     Abre una terminal y ejecuta:
     ```bash
@@ -21,7 +23,36 @@ Sigue estos pasos para configurar el entorno:
     ```
 
 2.  **Instalar el navegador necesario**:
-    Ejecuta el siguiente comando para descargar Chromium:
+    ```bash
+    playwright install chromium
+    ```
+
+### En Windows
+
+> ⚠️ **Importante**: En Windows es necesario que Python y pip estén correctamente configurados en el **PATH** del sistema. Si al ejecutar `pip` o `python3` aparece un error de "comando no reconocido", sigue estos pasos:
+
+1.  **Configurar el PATH de Python**:
+    - Abre el **menú Inicio** y busca **"Variables de entorno"**.
+    - Haz clic en **"Editar las variables de entorno del sistema"**.
+    - En la ventana de Propiedades del sistema, haz clic en **"Variables de entorno..."**.
+    - En **"Variables del sistema"**, busca la variable `Path` y haz clic en **"Editar"**.
+    - Agrega las siguientes rutas (ajusta según tu instalación de Python):
+      ```
+      C:\Users\TU_USUARIO\AppData\Local\Programs\Python\Python3XX\
+      C:\Users\TU_USUARIO\AppData\Local\Programs\Python\Python3XX\Scripts\
+      ```
+    - Haz clic en **"Aceptar"** en todas las ventanas.
+    - **Cierra y vuelve a abrir** la terminal (CMD o PowerShell) para que los cambios surtan efecto.
+
+    > 💡 **Alternativa rápida**: Si reinstalás Python, aseguráte de marcar la casilla **"Add Python to PATH"** durante la instalación.
+
+2.  **Instalar las dependencias de Python**:
+    Abre una terminal (CMD o PowerShell) y ejecuta:
+    ```bash
+    pip install playwright openpyxl
+    ```
+
+3.  **Instalar el navegador necesario**:
     ```bash
     playwright install chromium
     ```
@@ -31,7 +62,7 @@ Sigue estos pasos para configurar el entorno:
 1.  **Ejecutar el Bot**:
     En la terminal, navega hasta la carpeta del proyecto y ejecuta:
     ```bash
-    python bot_quipux.py
+    python3 bot_quipux.py
     ```
 
 2.  **Inicio de Sesión (Manual)**:
@@ -39,14 +70,24 @@ Sigue estos pasos para configurar el entorno:
     - Ingresa tu usuario y contraseña de Quipux.
     - Una vez que veas la bandeja de entrada (Recibidos), regresa a la terminal y presiona **ENTER**.
 
-3.  **Menú de Opciones**:
+3.  **Nombre de Carpeta**:
+    - Al seleccionar el usuario, el bot te pedirá un **nombre de carpeta** donde se guardarán las descargas.
+    - Puedes escribir un nombre personalizado o presionar **ENTER** para usar el nombre del usuario como carpeta por defecto.
+    - Dentro de esta carpeta se crearán automáticamente subcarpetas `Recibidos/` y `Enviados/`.
+
+4.  **Menú de Opciones**:
     El bot presentará un menú interactivo en la terminal:
-    - `[1] 📥 Descargar Recibidos`: Procesa y descarga todos los documentos de la bandeja de recibidos.
-    - `[2] 📤 Descargar Enviados`: Procesa y descarga todos los documentos de la bandeja de enviados.
-    - `[3] 👤 Cambiar de usuario`: Permite cambiar de cuenta dentro de Quipux sin cerrar el bot.
+    - `[1] 📥 Descargar Recibidos`: Procesa y descarga los documentos de la bandeja de recibidos.
+    - `[2] 📤 Descargar Enviados`: Procesa y descarga los documentos de la bandeja de enviados.
+    - `[3] 👤 Cambiar de usuario`: Permite cambiar de cuenta dentro de Quipux y asignar una nueva carpeta.
     - `[0] 🚪 Salir`: Cierra la aplicación de forma segura.
 
-4.  **Proceso de Descarga**:
+5.  **Rango de Descarga**:
+    Al seleccionar Recibidos o Enviados, se presenta un sub-menú:
+    - `[1] 📋 Descargar TODO`: Descarga todos los documentos disponibles.
+    - `[2] 📅 Descargar hasta una fecha`: Solo descarga documentos con fecha igual o anterior a la indicada (formato: `DD/MM/AAAA`).
+
+6.  **Proceso de Descarga**:
     - El bot navegará página por página.
     - Creará una carpeta por cada documento.
     - Descargará el PDF principal y todos sus anexos (si los tiene).
@@ -58,7 +99,7 @@ Los archivos se guardan en la carpeta `mis_respaldos/` con la siguiente estructu
 
 ```text
 mis_respaldos/
-└── NOMBRE_USUARIO/
+└── NOMBRE_CARPETA/
     ├── Recibidos/
     │   ├── quipux_recibidos.xlsx        <-- Reporte detallado
     │   ├── DOC_001_NUM_DOC/             <-- Carpeta por documento
@@ -77,6 +118,7 @@ mis_respaldos/
 - **No cierres el navegador manualmente** a menos que el bot ya haya terminado o se lo indiques.
 - Si el bot encuentra errores de red, intentará reintentar la descarga automáticamente.
 - El archivo Excel incluye metadatos como remitente, asunto, fecha, número de documento y cantidad de anexos.
+- Al **cambiar de usuario**, el bot te pedirá nuevamente un nombre de carpeta para organizar las descargas del nuevo usuario.
 
 ---
 *Desarrollado para la automatización de respaldos en Quipux.*
