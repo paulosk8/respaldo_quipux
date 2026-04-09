@@ -77,15 +77,19 @@ Sigue estos pasos para configurar el entorno:
 
 4.  **Menú de Opciones**:
     El bot presentará un menú interactivo en la terminal:
-    - `[1] 📥 Descargar Recibidos`: Procesa y descarga los documentos de la bandeja de recibidos.
-    - `[2] 📤 Descargar Enviados`: Procesa y descarga los documentos de la bandeja de enviados.
-    - `[3] 👤 Cambiar de usuario`: Permite cambiar de cuenta dentro de Quipux y asignar una nueva carpeta.
+    - `[1] 📥 Descargar Recibidos`: Procesa y descarga documentos de recibidos.
+    - `[2] 📤 Descargar Enviados`: Procesa y descarga documentos de enviados.
+    - `[3] 🗃️ Descargar Archivados`: Descarga documentos guardados en Archivados.
+    - `[4] 🗂️ Carpetas Virtuales`: Navega interactivamente por el árbol de carpetas.
+    - `[5] 👤 Cambiar de usuario`: Permite cambiar de cuenta y asignar nueva carpeta.
     - `[0] 🚪 Salir`: Cierra la aplicación de forma segura.
 
-5.  **Rango de Descarga**:
-    Al seleccionar Recibidos o Enviados, se presenta un sub-menú:
-    - `[1] 📋 Descargar TODO`: Descarga todos los documentos disponibles.
-    - `[2] 📅 Descargar hasta una fecha`: Solo descarga documentos con fecha igual o anterior a la indicada (formato: `DD/MM/AAAA`).
+5.  **Filtrado por Fechas y Navegación**:
+    - **Bandejas Normales (Opción 1 a 3)**: El bot te preguntará el **rango exacto de fechas** (`Fecha DESDE` y `Fecha HASTA`) que deseas extraer mediante la terminal.
+    - **Carpetas Virtuales (Opción 4)**: 
+        1. Al elegirla, seleccionarás un año del sistema superior en la web.
+        2. Si la web cargó las opciones, el bot listará **agrupadamente** en la terminal las subcarpetas disponibles para que escojas por número. (O alternativamente, te pedirá que expulses el árbol dando un par de clics a los íconos de "+").
+        3. El bot seleccionará la carpeta automáticamente vía JS. Al cargar los resultados, utilizarás las ***casillas de filtro nativo web de Quipux*** ('Fecha Desde / Fecha Hasta') presionado 'Buscar Documentos' localmente en la pantalla, y solo entonces le darás ENTER en la consola a que el bot recoja lo filtrado y extraído.
 
 6.  **Proceso de Descarga**:
     - El bot navegará página por página.
@@ -108,9 +112,16 @@ mis_respaldos/
     │   │       ├── anexo1.pdf
     │   │       └── ...
     │   └── ...
-    └── Enviados/
-        ├── quipux_enviados.xlsx
-        └── ...
+    ├── Enviados/
+    │   ├── quipux_enviados.xlsx
+    │   └── ...
+    ├── Archivados/
+    │   ├── quipux_archivados.xlsx
+    │   └── ...
+    └── Carpetas Virtuales/
+        └── AÑO_NombreDeCarpeta/
+            ├── reporte_virtual.xlsx
+            └── ...
 ```
 
 ## ⚠️ Notas Importantes
