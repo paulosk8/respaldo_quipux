@@ -245,7 +245,7 @@ async def navegar_bandeja(target_page, bandeja_nombre, carpeta_codigo, pagina=1,
     if mf:
         bandeja_real = await verificar_bandeja(mf)
         print(f"       Bandeja cargada: {bandeja_real}")
-        if bandeja_nombre.lower() not in bandeja_real.lower():
+        if bandeja_nombre != "Carpetas Virtuales" and bandeja_nombre.lower() not in bandeja_real.lower():
             print(f"       ⚠ La bandeja cargada ({bandeja_real}) NO coincide "
                   f"con la solicitada ({bandeja_nombre})")
             navegacion_ok = False  # Forzar fallback manual
@@ -356,58 +356,60 @@ async def descargar_bandeja(target_page, main_frame, context, download_dir, band
         docs = await main_frame.evaluate("""
             () => {
                 const docs = [];
-                const rows = document.querySelectorAll('tr.listado1, tr.listado2');
+                // Quitar restricción de clases para atrapar los resultados de Carpetas Virtuales también
+                const rows = document.querySelectorAll('tr');
+                const isSearchLayout = location.href.includes('lista_documentos_buscar.php');
+                
                 rows.forEach((row, idx) => {
-                    // Saltar filas ocultas (de otra bandeja que quedaron en el DOM)
                     const style = window.getComputedStyle(row);
                     if (style.display === 'none' || style.visibility === 'hidden') return;
                     if (row.offsetParent === null && style.position !== 'fixed') return;
 
                     const cells = row.querySelectorAll('td');
-                    const links = row.querySelectorAll('a[href*="mostrar_documento"]');
+                    // Ignorar la fila si no tiene las celdas mínimas
+                    if (cells.length < 5) return;
+                    
                     let radicado = '', textrad = '', carpeta = '';
-                    for (const link of links) {
+                    const allLinks = row.querySelectorAll('a');
+                    for (const link of allLinks) {
                         const href = link.getAttribute('href') || '';
-                        const match = href.match(/mostrar_documento\\("([^"]+)","([^"]+)","([^"]+)"\\)/);
-                        if (match) {
+                        const onclick = link.getAttribute('onclick') || '';
+                        const text = onclick + ' ' + href;
+                        
+                        // Permisivo: Buscar cualquier función típica de Quipux que maneje apertura de documentos
+                        // ej: mostrar_documento('1234','5432','8') o ver_datos_documento('1234','')
+                        const match = text.match(/(?:mostrar|ver|abrir)_.*?[a-zA-Z0-9]*documento.*?[\\(][^'"\\d]*['"](\\d+)['"](?:[\\s,]+['"]([^'"]*)['"])?(?:[\\s,]+['"]([^'"]*)['"])?/i);
+                        if (match && match[1]) {
                             radicado = match[1];
-                            textrad = match[2];
-                            carpeta = match[3];
+                            textrad = match[2] || match[1];
+                            carpeta = match[3] || '';
                             break;
                         }
                     }
-                    if (!radicado) {
-                        const allLinks = row.querySelectorAll('a');
-                        for (const link of allLinks) {
-                            const onclick = link.getAttribute('onclick') || '';
-                            const href = link.getAttribute('href') || '';
-                            const text = onclick + ' ' + href;
-                            const match = text.match(/mostrar_documento\\(['"](\\d+)['"],\\s*['"]([^'"]+)['"],\\s*['"]([^'"]+)['"]\\)/);
-                            if (match) {
-                                radicado = match[1];
-                                textrad = match[2];
-                                carpeta = match[3];
-                                break;
-                            }
-                        }
-                    }
-
+                    
+                    // Extraer basándose en el layout de la tabla
                     let asunto = '', remitente = '', fecha = '', numDoc = '';
                     let noReferencia = '', usuarioAnterior = '';
-                    if (cells.length >= 8) {
+                    
+                    if (isSearchLayout && cells.length >= 7) {
+                        // Layout de Carpetas Virtuales: De(0), Para(1), Asunto(2), Fecha(3), Num(4), Usuario(5), Estado(6)
+                        remitente = (cells[0]?.innerText || '').trim();
+                        // El Para está en cells[1] si deseas sumarlo después
+                        asunto = (cells[2]?.innerText || '').trim();
+                        fecha = (cells[3]?.innerText || '').trim().replace(/\\s*\\(GMT.*?\\)/i, '');
+                        numDoc = (cells[4]?.innerText || '').trim();
+                    } else if (cells.length >= 8) {
+                        // Layout tradicional bandejas
                         remitente = (cells[5]?.innerText || '').trim();
                         asunto = (cells[6]?.innerText || '').trim();
                         fecha = (cells[7]?.innerText || '').trim();
                         numDoc = (cells[8]?.innerText || '').trim();
-                    }
-                    if (cells.length >= 10) {
-                        noReferencia = (cells[9]?.innerText || '').trim();
-                    }
-                    if (cells.length >= 11) {
-                        usuarioAnterior = (cells[10]?.innerText || '').trim();
+                        
+                        if (cells.length >= 10) noReferencia = (cells[9]?.innerText || '').trim();
+                        if (cells.length >= 11) usuarioAnterior = (cells[10]?.innerText || '').trim();
                     }
 
-                    // Solo incluir filas que tengan radicado Y datos visibles
+                    // Solo incluir filas que tengan radicado descubiertos por el script nativo 
                     if (radicado && (numDoc || asunto || remitente)) {
                         docs.push({
                             index: idx, radicado, textrad, carpeta,
@@ -423,6 +425,17 @@ async def descargar_bandeja(target_page, main_frame, context, download_dir, band
         print(f"  Documentos en esta página: {len(docs)}")
 
         if not docs:
+            debug_html = await main_frame.evaluate("""
+                () => {
+                    const row = document.querySelector('tr.listado1, tr.listado2') || document.querySelectorAll('tr')[5];
+                    return row ? row.outerHTML : 'No se encontraron filas <tr> para debug.';
+                }
+            """)
+            print("\n  [DEBUG] Ningún documento fue extraído de esta página.")
+            print("  Si crees que esto es un error, por favor revisa el código HTML de una fila de ejemplo:")
+            print("  " + "-"*40)
+            print(f"  {debug_html[:800]}...")
+            print("  " + "-"*40)
             print("  Sin documentos, saltando...")
             continue
 
@@ -865,7 +878,7 @@ async def run():
         print(f"{'─' * 60}")
         print(f"  Base: {BASE_DIR}")
         print(f"  Carpeta por defecto: {safe_user}/")
-        print(f"  (Dentro se crearán subcarpetas Recibidos/, Enviados/ y Archivados/)")
+        print(f"  (Dentro se crearán subcarpetas Recibidos/, Enviados/, Archivados/ y Carpetas Virtuales/)")
         print(f"\n  Ingresa el nombre de la carpeta o presiona ENTER")
         print(f"  para usar la carpeta por defecto.")
         nombre_carpeta = input(f"\n  📁 Nombre de carpeta [{safe_user}]: ").strip()
@@ -876,7 +889,8 @@ async def run():
         print(f"  ✓ Carpeta: {os.path.join(BASE_DIR, nombre_carpeta)}/")
         print(f"     ├── Recibidos/")
         print(f"     ├── Enviados/")
-        print(f"     └── Archivados/")
+        print(f"     ├── Archivados/")
+        print(f"     └── Carpetas Virtuales/")
 
         # ══════════════════════════════════════════════
         # MENÚ INTERACTIVO
@@ -892,8 +906,9 @@ async def run():
             print("  [1] 📥 Descargar Recibidos")
             print("  [2] 📤 Descargar Enviados")
             print("  [3] 📦 Descargar Archivados  (Otras Bandejas)")
+            print("  [4] 📂 Descargar de Carpetas Virtuales")
             print("\n  ─── Opciones ───")
-            print("  [4] 👤 Cambiar de usuario")
+            print("  [5] 👤 Cambiar de usuario")
             print("  [0] 🚪 Salir")
             print("═" * 60)
 
@@ -903,67 +918,279 @@ async def run():
                 print("\n  👋 ¡Hasta luego!")
                 break
 
-            elif opcion in ("1", "2", "3"):
+            elif opcion in ("1", "2", "3", "4"):
                 opciones_bandeja = {
                     "1": ("Recibidos", "2", "📥"),
                     "2": ("Enviados", "8", "📤"),
                     "3": ("Archivados", "5", "📦"),
+                    "4": ("Carpetas Virtuales", "0", "📂"),
                 }
                 bandeja_nombre, carpeta_codigo, emoji = opciones_bandeja[opcion]
-
-                # ── Sub-menú: rango de descarga ──
-                print(f"\n{'─' * 60}")
-                print(f"  {emoji} {bandeja_nombre.upper()} — Rango de descarga")
-                print(f"{'─' * 60}")
-                print("  [1] 📋 Descargar TODO")
-                print("  [2] 📅 Descargar por rango de fechas")
-                print("  [0] ↩  Volver al menú")
-                print(f"{'─' * 60}")
-
-                opcion_rango = input("\n  Selecciona una opción: ").strip()
-
-                if opcion_rango == "0":
-                    continue
 
                 fecha_desde = None
                 fecha_hasta = None
 
-                if opcion_rango == "2":
-                    print("\n  Ingresa el rango de fechas para descargar documentos.")
-                    print("  Solo se descargarán documentos cuya fecha esté dentro")
-                    print("  del rango indicado (inclusive).")
-                    print("  Formato: DD/MM/AAAA  (ejemplo: 01/01/2025)")
+                dl_dir = os.path.join(BASE_DIR, nombre_carpeta, bandeja_nombre)
 
-                    # ── Fecha DESDE ──
-                    while True:
-                        fecha_desde_input = input("\n  📅 Fecha DESDE: ").strip()
-                        fecha_desde = parsear_fecha(fecha_desde_input)
-                        if fecha_desde:
-                            break
-                        print("  ⚠ Formato de fecha no válido. Usa DD/MM/AAAA")
-                        print("    Ejemplo: 01/01/2025")
-
-                    # ── Fecha HASTA ──
-                    while True:
-                        fecha_hasta_input = input("  📅 Fecha HASTA: ").strip()
-                        fecha_hasta = parsear_fecha(fecha_hasta_input)
-                        if not fecha_hasta:
-                            print("  ⚠ Formato de fecha no válido. Usa DD/MM/AAAA")
-                            print("    Ejemplo: 31/12/2025")
-                            continue
-                        if fecha_hasta < fecha_desde:
-                            print(f"  ⚠ La fecha HASTA ({fecha_hasta.strftime('%d/%m/%Y')}) no puede ser")
-                            print(f"    anterior a la fecha DESDE ({fecha_desde.strftime('%d/%m/%Y')}).")
-                            print(f"    Ingresa una fecha igual o posterior.")
-                            continue
-                        break
-
-                    print(f"\n  ✔ Rango seleccionado: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
-                elif opcion_rango != "1":
-                    print("  ⚠ Opción no válida")
+                # Navegar directamente a la bandeja con URL absoluta
+                print(f"  Navegando a {bandeja_nombre}...")
+                main_frame = await navegar_bandeja(target_page, bandeja_nombre, carpeta_codigo, pagina=1)
+                if not main_frame:
+                    print(f"  ⚠ Error: No se pudo navegar a {bandeja_nombre}.")
                     continue
 
-                dl_dir = os.path.join(BASE_DIR, nombre_carpeta, bandeja_nombre)
+                # --- LÓGICA ESPECIAL PARA CARPETAS VIRTUALES ---
+                if opcion == "4":
+                    print("\n  Cargando Carpetas Virtuales...")
+                    await asyncio.sleep(5)
+                    
+                    try:
+                        years = await main_frame.evaluate("""
+                            () => {
+                                const tds = document.querySelectorAll('td');
+                                const results = [];
+                                for (let td of tds) {
+                                    const text = (td.innerText || '').trim();
+                                    if (/^20\\d{2}$/.test(text)) {
+                                        results.push(text);
+                                    }
+                                }
+                                return [...new Set(results)].sort((a,b)=>b-a);
+                            }
+                        """)
+                    except Exception:
+                        years = []
+                    
+                    if years:
+                        print("\n  Años detectados:")
+                        for i, y in enumerate(years, 1):
+                            print(f"  [{i}] {y}")
+                        print("  [0] Ingresar año manualmente")
+                        
+                        opt = input("\n  Selecciona el año: ").strip()
+                        if opt != "0" and opt.isdigit() and 1 <= int(opt) <= len(years):
+                            year_to_click = years[int(opt)-1]
+                        else:
+                            year_to_click = input("  Ingresa el año exacto: ").strip()
+                    else:
+                        year_to_click = input("\n  📅 Ingresa el Año (ej. 2026): ").strip()
+                        
+                    if year_to_click:
+                        print(f"  👉 Expandiendo '{year_to_click}'...")
+                        try:
+                            # Intentar clic en el texto exacto
+                            await main_frame.locator(f"text='{year_to_click}'").first.click(timeout=5000)
+                        except Exception:
+                            print("  ⚠ No se pudo hacer clic automáticamente, por favor expande manualmente.")
+                    
+                    await asyncio.sleep(2)
+                    carpeta_final_nombre = "Varios"
+                    
+                    print("\n  🔍 Evaluando el árbol de carpetas virtuales...")
+                    await asyncio.sleep(4)
+                    
+                    js_extractor = """
+                        () => {
+                            const rows = document.querySelectorAll('tr');
+                            const options = [];
+                            let currentCategory = "Carpetas Principales";
+                            
+                            rows.forEach((row, idx) => {
+                                // Ignorar filas que sean contenedores de otras tablas completas (evita basura acumulada)
+                                if (row.querySelector('table')) return;
+                                
+                                const style = window.getComputedStyle(row);
+                                if (style.display === 'none' || style.visibility === 'hidden') return;
+                                
+                                const text = row.innerText || '';
+                                if (!text.includes('Activo') && !text.includes('Seleccionar')) return;
+                                
+                                const cleanText = text.replace(/\\n/g, ' ').trim();
+                                const hasSelect = text.includes('Seleccionar');
+                                
+                                let folderName = '';
+                                const match = cleanText.match(/^(.*?)(?:\\s+Activo|\\s+Inactivo)(?:\\s+Seleccionar)?/i);
+                                if (match && match[1]) {
+                                    folderName = match[1].trim().replace(/^[-+]+/, '').trim();
+                                } else {
+                                    folderName = cleanText.split('Activo')[0].trim().replace(/^[-+]+/, '').trim();
+                                }
+                                
+                                // Filtrar cabeceras y años
+                                if (!folderName || /^20\\d{2}$/.test(folderName) || folderName.includes('Nombre de Carpeta')) return;
+                                
+                                if (!hasSelect) {
+                                    // Es un nivel intermedio (Categoría / Padre)
+                                    currentCategory = folderName;
+                                } else {
+                                    // Es una carpeta final seleccionable
+                                    // Limpiamos por si queda "Seleccionar" en el nombre
+                                    folderName = folderName.replace(/Seleccionar.*$/i, '').trim();
+                                    options.push({
+                                        id: idx,
+                                        name: folderName,
+                                        category: currentCategory
+                                    });
+                                }
+                            });
+                            return options;
+                        }
+                    """
+                    
+                    try:
+                        opciones_seleccionar = await main_frame.evaluate(js_extractor)
+                    except Exception as e:
+                        opciones_seleccionar = []
+                        print(f"  ⚠ Advertencia evaluando DOM: {e}")
+                    
+                    if not opciones_seleccionar:
+                        print("  ⚠ No se encontraron opciones disponibles para 'Seleccionar'.")
+                        print("  1. Navega en la página web y expende el árbol manualmente (haz clic en los iconos +).")
+                        print("  2. Una vez que las carpetas deseadas estén visibles en tu navegador, presiona ENTER para escanear de nuevo.")
+                        input("  >>> Presiona ENTER cuando hayas expandido las opciones... ")
+                        try:
+                            opciones_seleccionar = await main_frame.evaluate(js_extractor)
+                        except Exception:
+                            opciones_seleccionar = []
+                            
+                    carpeta_final_nombre = "Varios"
+                    
+                    if opciones_seleccionar:
+                        print("\n" + "═" * 70)
+                        print("  📂 CARPETAS DISPONIBLES PARA SELECCIONAR")
+                        print("═" * 70)
+                        
+                        from collections import defaultdict
+                        grupos = defaultdict(list)
+                        for opt in opciones_seleccionar:
+                            grupos[opt['category']].append(opt)
+                            
+                        # Asignar un número global
+                        contador = 1
+                        mapa_opciones = {}
+                        
+                        for cat, lista in grupos.items():
+                            print(f"\n  📁 {cat.upper()}")
+                            for opt in lista:
+                                print(f"      [{contador:2d}] {opt['name']}")
+                                mapa_opciones[str(contador)] = opt
+                                contador += 1
+                                
+                        print("\n" + "─" * 70)
+                        print("  [0] Omitir lista / Abortar y seleccionar manualmente en el navegador")
+                        
+                        sel_idx = input("\n  🔢 Elige el número de la carpeta a descargar: ").strip()
+                        
+                        if sel_idx in mapa_opciones:
+                            elegida = mapa_opciones[sel_idx]
+                            carpeta_final_nombre = re.sub(r'[^\w\-. ]', '_', elegida['name'])
+                            print(f"  👉 Clickeando en 'Seleccionar' para: {elegida['name']} ...")
+                            try:
+                                # Usamos JS directo para forzar el clic en el índice exacto extraído para saltar bloqueos visuales de Playwright
+                                row_idx = elegida['id']
+                                click_script = f"""
+                                    () => {{
+                                        const rows = document.querySelectorAll('tr');
+                                        if ({row_idx} < rows.length) {{
+                                            const row = rows[{row_idx}];
+                                            const links = Array.from(row.querySelectorAll('a'));
+                                            const selectLink = links.find(el => el.innerText.includes('Seleccionar'));
+                                            if (selectLink) {{
+                                                selectLink.click();
+                                                return true;
+                                            }}
+                                        }}
+                                        return false;
+                                    }}
+                                """
+                                success = await main_frame.evaluate(click_script)
+                                if success:
+                                    print("  ✓ Carpeta virtual seleccionada con éxito (via JS).")
+                                    await asyncio.sleep(5)
+                                else:
+                                    raise Exception("No se halló el link en el DOM o cambió de posición.")
+                            except Exception as e:
+                                print(f"  ⚠ Error al hacer clic automáticamente: {e}")
+                                print("  Por favor haz clic manualmente en el navegador.")
+                                input("  >>> Presiona ENTER cuando hayas seleccionado... ")
+                        else:
+                            print("  Selección omitida o no válida.")
+                            input("  >>> Presiona ENTER cuando hayas hecho clic en 'Seleccionar' en el navegador web... ")
+                    else:
+                        print("\n  ⚠ No se detectó ninguna lista de carpetas.")
+                        print("  Navega manualmente en la ventana del navegador y da clic en 'Seleccionar'.")
+                        input("  >>> Presiona ENTER cuando veas los documentos de la carpeta listos para extraer... ")
+                            
+                    if year_to_click:
+                        dl_dir = os.path.join(dl_dir, f"{year_to_click}_{carpeta_final_nombre}")
+                # --- FIN LÓGICA ESPECIAL CARPETAS VIRTUALES ---
+
+                if opcion == "4":
+                    print("\n" + "═" * 70)
+                    print("  ⚙  FILTRADO POR FECHAS EN CARPETAS VIRTUALES")
+                    print("═" * 70)
+                    print("  Nota: Las carpetas virtuales tienen su propio filtro nativo en Quipux.")
+                    print("  En tu navegador verás que se muestran los documentos según el")
+                    print("  rango de fechas seleccionado (ej. los últimos 3 meses).")
+                    print("  ")
+                    print("  Si deseas descargar MÁS O MENOS documentos, modifica las fechas")
+                    print("  directamente en los campos 'Fecha Desde' y 'Fecha Hasta', y")
+                    print("  haz clic en 'Buscar Documentos' en la pantalla.")
+                    print("─" * 70)
+                    input("  >>> Configura el filtro en tu navegador y presiona ENTER para extraer... ")
+                    
+                    fecha_desde = None
+                    fecha_hasta = None
+                    opcion_rango = "1"
+                else:
+                    # ── Sub-menú: rango de descarga ──
+                    print(f"\n{'─' * 60}")
+                    print(f"  {emoji} {bandeja_nombre.upper()} — Rango de descarga")
+                    print(f"{'─' * 60}")
+                    print("  [1] 📋 Descargar TODO")
+                    print("  [2] 📅 Descargar por rango de fechas")
+                    print("  [0] ↩  Volver al menú")
+                    print(f"{'─' * 60}")
+
+                    opcion_rango = input("\n  Selecciona una opción: ").strip()
+
+                    if opcion_rango == "0":
+                        continue
+
+                    if opcion_rango == "2":
+                        print("\n  Ingresa el rango de fechas para descargar documentos.")
+                        print("  Solo se descargarán documentos cuya fecha esté dentro")
+                        print("  del rango indicado (inclusive).")
+                        print("  Formato: DD/MM/AAAA  (ejemplo: 01/01/2025)")
+
+                        # ── Fecha DESDE ──
+                        while True:
+                            fecha_desde_input = input("\n  📅 Fecha DESDE: ").strip()
+                            fecha_desde = parsear_fecha(fecha_desde_input)
+                            if fecha_desde:
+                                break
+                            print("  ⚠ Formato de fecha no válido. Usa DD/MM/AAAA")
+                            print("    Ejemplo: 01/01/2025")
+
+                        # ── Fecha HASTA ──
+                        while True:
+                            fecha_hasta_input = input("  📅 Fecha HASTA: ").strip()
+                            fecha_hasta = parsear_fecha(fecha_hasta_input)
+                            if not fecha_hasta:
+                                print("  ⚠ Formato de fecha no válido. Usa DD/MM/AAAA")
+                                print("    Ejemplo: 31/12/2025")
+                                continue
+                            if fecha_hasta < fecha_desde:
+                                print(f"  ⚠ La fecha HASTA ({fecha_hasta.strftime('%d/%m/%Y')}) no puede ser")
+                                print(f"    anterior a la fecha DESDE ({fecha_desde.strftime('%d/%m/%Y')}).")
+                                print(f"    Ingresa una fecha igual o posterior.")
+                                continue
+                            break
+
+                        print(f"\n  ✔ Rango seleccionado: {fecha_desde.strftime('%d/%m/%Y')} → {fecha_hasta.strftime('%d/%m/%Y')}")
+                    elif opcion_rango != "1":
+                        print("  ⚠ Opción no válida")
+                        continue
 
                 print(f"\n{'=' * 60}")
                 print(f"  {emoji} DESCARGA DE {bandeja_nombre.upper()}")
@@ -975,19 +1202,12 @@ async def run():
                     print(f"  📅 Descargando TODO")
                 print(f"{'=' * 60}")
 
-                # Navegar directamente a la bandeja con URL absoluta
-                print(f"  Navegando a {bandeja_nombre}...")
-                main_frame = await navegar_bandeja(target_page, bandeja_nombre, carpeta_codigo, pagina=1)
-                if not main_frame:
-                    print(f"  ⚠ Error: No se pudo navegar a {bandeja_nombre}.")
-                    continue
-
                 await descargar_bandeja(target_page, main_frame, context, dl_dir, f"{bandeja_nombre} — {usuario_actual}", carpeta_codigo=carpeta_codigo, fecha_desde=fecha_desde, fecha_hasta=fecha_hasta)
 
                 print("\n" + "─" * 60)
                 input("  Presiona ENTER para volver al menú... ")
 
-            elif opcion == "4":
+            elif opcion == "5":
                 # ── Cambiar usuario ──
                 print("\n" + "─" * 60)
                 print("  👤 CAMBIAR DE USUARIO")
@@ -1007,7 +1227,7 @@ async def run():
                 print(f"{'─' * 60}")
                 print(f"  Base: {BASE_DIR}")
                 print(f"  Carpeta por defecto: {safe_user}/")
-                print(f"  (Dentro se crearán subcarpetas Recibidos/, Enviados/ y Archivados/)")
+                print(f"  (Dentro se crearán subcarpetas Recibidos/, Enviados/, Archivados/ y Carpetas Virtuales/)")
                 print(f"\n  Ingresa el nombre de la carpeta o presiona ENTER")
                 print(f"  para usar la carpeta por defecto.")
                 nombre_carpeta = input(f"\n  📁 Nombre de carpeta [{safe_user}]: ").strip()
@@ -1018,7 +1238,8 @@ async def run():
                 print(f"  ✓ Carpeta: {os.path.join(BASE_DIR, nombre_carpeta)}/")
                 print(f"     ├── Recibidos/")
                 print(f"     ├── Enviados/")
-                print(f"     └── Archivados/")
+                print(f"     ├── Archivados/")
+                print(f"     └── Carpetas Virtuales/")
 
             else:
                 print("  ⚠ Opción no válida")
